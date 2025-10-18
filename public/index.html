@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>CBSL Virtual Assistant (Demo)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="chat-shell">
+    <h1>CBSL Virtual Assistant (Demo)</h1>
+    <div id="chat-window" class="chat-window"></div>
+    <div class="input-row">
+      <input id="user-input" placeholder="Ask in English, Sinhala, or Tamil..." />
+      <button id="send-btn">Send</button>
+    </div>
+  </div>
+  <script>
+    async function sendQuery(q) {
+      const res = await fetch('/api/ask', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ query: q })
+      });
+      return res.json();
+    }
+    const chatWindow = document.getElementById('chat-window');
+    const input = document.getElementById('user-input');
+    const btn = document.getElementById('send-btn');
+    function appendMessage(role, text) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      div.textContent = text;
+      chatWindow.appendChild(div);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+    btn.onclick = async () => {
+      const q = input.value.trim();
+      if (!q) return;
+      appendMessage('user', q);
+      input.value = '';
+      appendMessage('bot', '...thinking...');
+      try {
+        const { answer } = await sendQuery(q);
+        // remove the thinking line
+        const thinking = document.querySelector('.msg.bot:last-child');
+        if (thinking && thinking.textContent === '...thinking...') thinking.remove();
+        appendMessage('bot', answer);
+      } catch (e) {
+        appendMessage('bot', 'Error: unable to get answer.');
+      }
+    };
+    input.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') btn.click();
+    });
+  </script>
+</body>
+</html>
