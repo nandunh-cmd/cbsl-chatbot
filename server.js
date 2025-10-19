@@ -73,44 +73,51 @@ async function translateText(text, targetLang) {
 }
 
 // ---- FETCH CONTENT FROM CBSL ----
-async function getCBSLAnswer(query) {
+export async function getCBSLAnswer(query) {
   try {
-    const searchUrl = `https://www.cbsl.gov.lk/search?keys=${encodeURIComponent(query)}`;
-    const res = await fetch(searchUrl, { timeout: 15000 });
-    
-    if (!res.ok) {
-      console.error("Fetch failed:", res.status);
-      return "I could not access the CBSL official website at this moment. Please try again later.";
+    // --- Step 1: Try fetching directly from CBSL ---
+    console.log("🌐 Fetching CBSL site...");
+    let res = await fetch(`https://www.cbsl.gov.lk/search?keys=${encodeURIComponent(query)}`);
+    let html = await res.text();
+
+    // --- Step 2: If fetch failed or response too small, use fallback ---
+    if (!res.ok || html.length < 500) {
+      console.warn("⚠️ CBSL direct fetch failed or empty, retrying via Jina AI relay...");
+      const relayUrl = `https://r.jina.ai/http://www.cbsl.gov.lk/search?keys=${encodeURIComponent(query)}`;
+      const relayRes = await fetch(relayUrl);
+      if (relayRes.ok) {
+        html = await relayRes.text();
+      } else {
+        console.error("❌ Fallback fetch also failed.");
+        return "Sorry, unable to retrieve data from CBSL at the moment.";
+      }
     }
 
-    const html = await res.text();
-    const cleaned = cleanText(html);
-
-    // If there's no meaningful content, stop early
-    if (!cleaned || cleaned.length < 200) {
-      return "I could not find official CBSL information on that topic. Please contact a CBSL officer for clarification.";
-    }
-
+    // --- Step 3: Summarize using OpenAI ---
+    console.log("🤖 Sending content to OpenAI...");
     const completion = await client.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: "You are CBSL Virtual Assistant. Answer only using verified information from CBSL website content provided. If unclear or unrelated, politely say you couldn’t find relevant information."
+          content: "You are an assistant that extracts factual information from CBSL website text.",
         },
         {
           role: "user",
-          content: `CBSL official website content:\n${cleaned}\n\nQuestion: ${query}`
-        }
+          content: `Extract or summarize relevant information for this query: "${query}". 
+Here is the CBSL page text:\n\n${html}`,
+        },
       ],
-      temperature: 0.3
+      temperature: 0.2,
+      max_tokens: 300,
     });
 
-    return completion.choices[0].message.content.trim();
+    const answer = completion.choices[0]?.message?.content?.trim() || "No relevant information found.";
+    return answer;
 
-  } catch (err) {
-    console.error("Error fetching CBSL answer:", err);
-    return "I’m sorry, I encountered an issue retrieving official CBSL information. Please try again or contact a CBSL officer.";
+  } catch (error) {
+    console.error("💥 Error in getCBSLAnswer():", error);
+    return "An error occurred while fetching CBSL data.";
   }
 }
 
