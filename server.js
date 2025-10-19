@@ -74,28 +74,46 @@ async function translateText(text, targetLang) {
 
 // ---- FETCH CONTENT FROM CBSL ----
 async function getCBSLAnswer(query) {
-  const searchUrl = `https://www.cbsl.gov.lk/search?keys=${encodeURIComponent(query)}`;
-  const res = await fetch(searchUrl);
-  const html = await res.text();
-  const cleaned = cleanText(html);
+  try {
+    const searchUrl = `https://www.cbsl.gov.lk/search?keys=${encodeURIComponent(query)}`;
+    const res = await fetch(searchUrl, { timeout: 15000 });
+    
+    if (!res.ok) {
+      console.error("Fetch failed:", res.status);
+      return "I could not access the CBSL official website at this moment. Please try again later.";
+    }
 
-  const completion = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: "You are CBSL Virtual Assistant. Only answer using verified information from CBSL website content provided. If unclear or unrelated, say 'I could not find official CBSL information on that topic. Please contact a CBSL officer for clarification.'"
-      },
-      {
-        role: "user",
-        content: `CBSL official website content:\n${cleaned}\n\nQuestion: ${query}`
-      }
-    ],
-    temperature: 0.3
-  });
+    const html = await res.text();
+    const cleaned = cleanText(html);
 
-  return completion.choices[0].message.content;
+    // If there's no meaningful content, stop early
+    if (!cleaned || cleaned.length < 200) {
+      return "I could not find official CBSL information on that topic. Please contact a CBSL officer for clarification.";
+    }
+
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "You are CBSL Virtual Assistant. Answer only using verified information from CBSL website content provided. If unclear or unrelated, politely say you couldn’t find relevant information."
+        },
+        {
+          role: "user",
+          content: `CBSL official website content:\n${cleaned}\n\nQuestion: ${query}`
+        }
+      ],
+      temperature: 0.3
+    });
+
+    return completion.choices[0].message.content.trim();
+
+  } catch (err) {
+    console.error("Error fetching CBSL answer:", err);
+    return "I’m sorry, I encountered an issue retrieving official CBSL information. Please try again or contact a CBSL officer.";
+  }
 }
+
 
 // ---- ROUTES ----
 app.use(express.json());
