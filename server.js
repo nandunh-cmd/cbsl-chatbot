@@ -1,83 +1,144 @@
-        import path from "path";
-		import os from "os";
-		import { fileURLToPath } from "url";
-		import { dirname } from "path";
-		import express from "express";
-        import fetch from "node-fetch";
-        import sqlite3 from "sqlite3";
-        import { open } from "sqlite";
-        import { CONFIG } from "./config.js";
-        import { fetchCbslData } from "./retriever.js";
-        import { detectLanguage, translateText } from "./translator.js";
-        // NOTE: This template uses the OpenAI npm package if you integrate AgentKit or direct API calls.
-        // For demo purposes, the server returns a placeholder if OPENAI_API_KEY is not set.
+import express from "express";
+import fetch from "node-fetch";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import { open } from "sqlite";
+import sqlite3 from "sqlite3";
+import os from "os";
+import { config } from "dotenv";
+import OpenAI from "openai";
 
-        const app = express();
-        app.use(express.json());
-        const PORT = process.env.PORT || 3000;
+config();
 
-        // Initialize lightweight SQLite logging
-        const dbPath = path.join(os.tmpdir(), "chatlogs.db");
+const app = express();
+const port = process.env.PORT || 3000;
 
-		const dbPromise = open({
-		  filename: dbPath,
-		  driver: sqlite3.Database
-		});
+// ---- PATH FIX (for Vercel ES modules) ----
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-        (async () => {
-          const db = await dbPromise;
-          await db.exec("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT, answer TEXT, lang TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP)");
-        })();
+// ---- SQLITE SETUP (Vercel writable /tmp directory) ----
+const dbPath = join(os.tmpdir(), "chatlogs.db");
+const dbPromise = open({
+  filename: dbPath,
+  driver: sqlite3.Database
+});
 
-        const __filename = fileURLToPath(import.meta.url);
-		const __dirname = dirname(__filename);
+await (async () => {
+  const db = await dbPromise;
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS chatlogs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT,
+      userQuery TEXT,
+      botResponse TEXT,
+      language TEXT
+    )
+  `);
+})();
 
-		app.get("/", (req, res) => {
-		  res.sendFile(path.join(__dirname, "public", "index.html"));
-		});
+// ---- OPENAI SETUP ----
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
-        app.post("/api/ask", async (req, res) => {
-          try {
-            const userQuery = req.body.query || "";
-            const lang = await detectLanguage(userQuery);
-            // Fetch CBSL live content (lightweight snapshot)
-            const cbslContent = await fetchCbslData();
+// ---- HELPERS ----
+function cleanText(text) {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/Skip to main content/gi, "")
+    .replace(/Search form/gi, "")
+    .replace(/Search Navigation/gi, "")
+    .replace(/English සිංහල தமிழ்/gi, "")
+    .replace(/About the Bank.*/gi, "")
+    .trim();
+}
 
-            // Placeholder generation logic:
-            // In production, replace this section with calls to AgentKit / OpenAI using retrieved context.
-            let answerEnglish = `I searched the official CBSL site and found relevant information. (Demo answer)
+async function detectLanguage(text) {
+  if (/[අ-ෆ]/.test(text)) return "si"; // Sinhala
+  if (/[அ-ஹ]/.test(text)) return "ta"; // Tamil
+  return "en"; // Default English
+}
 
-Excerpt: ${cbslContent.slice(0,200)}...`;
+async function translateText(text, targetLang) {
+  if (targetLang === "en") return text;
+  const translation = await client.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: `Translate this into ${targetLang === "si" ? "Sinhala" : "Tamil"}.` },
+      { role: "user", content: text }
+    ]
+  });
+  return translation.choices[0].message.content;
+}
 
-            // If OPENAI_API_KEY is provided, one would call OpenAI here to craft a precise answer using cbslContent.
-            if (process.env.OPENAI_API_KEY) {
-              // Integrate AgentKit or direct OpenAI calls here.
-              // For demo, we still use the placeholder text above.
-            }
+// ---- FETCH CONTENT FROM CBSL ----
+async function getCBSLAnswer(query) {
+  const searchUrl = `https://www.cbsl.gov.lk/search?keys=${encodeURIComponent(query)}`;
+  const res = await fetch(searchUrl);
+  const html = await res.text();
+  const cleaned = cleanText(html);
 
-            const finalAnswer = (lang === "en") ? answerEnglish : await translateText(answerEnglish, lang);
+  const completion = await client.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: "You are CBSL Virtual Assistant. Only answer using verified information from CBSL website content provided. If unclear or unrelated, say 'I could not find official CBSL information on that topic. Please contact a CBSL officer for clarification.'"
+      },
+      {
+        role: "user",
+        content: `CBSL official website content:\n${cleaned}\n\nQuestion: ${query}`
+      }
+    ],
+    temperature: 0.3
+  });
 
-            // Log the interaction
-            const db = await dbPromise;
-            await db.run("INSERT INTO logs (question, answer, lang) VALUES (?, ?, ?)", [userQuery, finalAnswer, lang]);
+  return completion.choices[0].message.content;
+}
 
-            res.json({ answer: finalAnswer });
-          } catch (err) {
-            console.error("Error /api/ask:", err);
-            res.status(500).json({ error: "Internal Server Error" });
-          }
-        });
+// ---- ROUTES ----
+app.use(express.json());
+app.use(express.static(join(__dirname, "public")));
 
-        app.get("/admin/logs", async (req, res) => {
-          try {
-            const db = await dbPromise;
-            const rows = await db.all("SELECT * FROM logs ORDER BY ts DESC LIMIT 200");
-            res.json(rows);
-          } catch (e) {
-            res.status(500).json({ error: "Unable to fetch logs" });
-          }
-        });
+app.get("/", (req, res) => {
+  res.sendFile(join(__dirname, "public", "index.html"));
+});
 
-        app.listen(PORT, () => {
-          console.log(`${CONFIG.botName} demo running on port ${PORT}`);
-        });
+app.post("/chat", async (req, res) => {
+  try {
+    const { query } = req.body;
+    if (!query) return res.json({ text: "Please enter a question." });
+
+    const lang = await detectLanguage(query);
+    let answer = await getCBSLAnswer(query);
+
+    if (lang !== "en") {
+      answer = await translateText(answer, lang);
+    }
+
+    const db = await dbPromise;
+    await db.run(
+      `INSERT INTO chatlogs (timestamp, userQuery, botResponse, language)
+       VALUES (?, ?, ?, ?)`,
+      [new Date().toISOString(), query, answer, lang]
+    );
+
+    res.json({
+      text: answer,
+      source: "CBSL Official Website",
+      lang
+    });
+  } catch (err) {
+    console.error("Error:", err);
+    res.status(500).json({
+      text: "An internal error occurred. Please contact a CBSL officer.",
+      error: err.message
+    });
+  }
+});
+
+// ---- START SERVER ----
+app.listen(port, () => {
+  console.log(`CBSL Virtual Assistant running on port ${port}`);
+});
