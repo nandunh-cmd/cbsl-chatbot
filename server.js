@@ -1,4 +1,8 @@
-        import express from "express";
+        import path from "path";
+		import os from "os";
+		import { fileURLToPath } from "url";
+		import { dirname } from "path";
+		import express from "express";
         import fetch from "node-fetch";
         import sqlite3 from "sqlite3";
         import { open } from "sqlite";
@@ -13,19 +17,24 @@
         const PORT = process.env.PORT || 3000;
 
         // Initialize lightweight SQLite logging
-        const dbPromise = open({
-          filename: "./logs/chatlogs.db",
-          driver: sqlite3.Database
-        });
+        const dbPath = path.join(os.tmpdir(), "chatlogs.db");
+
+		const dbPromise = open({
+		  filename: dbPath,
+		  driver: sqlite3.Database
+		});
 
         (async () => {
           const db = await dbPromise;
           await db.exec("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT, answer TEXT, lang TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP)");
         })();
 
-        app.get("/", (req, res) => {
-          res.sendFile(new URL("./public/index.html", import.meta.url));
-        });
+        const __filename = fileURLToPath(import.meta.url);
+		const __dirname = dirname(__filename);
+
+		app.get("/", (req, res) => {
+		  res.sendFile(path.join(__dirname, "public", "index.html"));
+		});
 
         app.post("/api/ask", async (req, res) => {
           try {
