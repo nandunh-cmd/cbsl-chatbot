@@ -164,6 +164,4 @@ app.post("/chat", async (req, res) => {
 });
 
 // ---- START SERVER ----
-app.listen(port, () => {
-  console.log(`CBSL Virtual Assistant running on port ${port}`);
-});
+export default app;
